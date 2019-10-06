@@ -1,0 +1,171 @@
+### module "module_reloading_console.py"
+import sys
+import code
+import imp
+import readline
+import os
+from pprint import pprint
+from tempfile import mkstemp
+
+
+import atexit
+import pdb
+
+EDITOR = os.environ.get('EDITOR', 'vim')
+EDIT_CMD = '\e'
+
+# Color Support
+###############
+
+class TermColors(dict):
+    """Gives easy access to ANSI color codes. Attempts to fall back to no color
+    for certain TERM values. (Mostly stolen from IPython.)"""
+
+    COLOR_TEMPLATES = (
+        ("Black"       , "0;30"),
+        ("Red"         , "0;31"),
+        ("Green"       , "0;32"),
+        ("Brown"       , "0;33"),
+        ("Blue"        , "0;34"),
+        ("Purple"      , "0;35"),
+        ("Cyan"        , "0;36"),
+        ("LightGray"   , "0;37"),
+        ("DarkGray"    , "1;30"),
+        ("LightRed"    , "1;31"),
+        ("LightGreen"  , "1;32"),
+        ("Yellow"      , "1;33"),
+        ("LightBlue"   , "1;34"),
+        ("LightPurple" , "1;35"),
+        ("LightCyan"   , "1;36"),
+        ("White"       , "1;37"),
+        ("Normal"      , "0"),
+    )
+
+    NoColor = ''
+    _base  = '\001\033[%sm\002'
+
+    def __init__(self):
+        if os.environ.get('TERM') in ('xterm-color', 'xterm-256color', 'linux',
+                                    'screen', 'screen-256color', 'screen-bce'):
+            self.update(dict([(k, self._base % v) for k,v in self.COLOR_TEMPLATES]))
+        else:
+            self.update(dict([(k, self.NoColor) for k,v in self.COLOR_TEMPLATES]))
+_c = TermColors()
+
+def create_color_func(code):
+    def color_func(text, bold=True, readline_workaround=False):
+        code_str = '1;{}'.format(code) if bold else code
+        # - reason for readline_workaround: http://bugs.python.org/issue20359
+        if readline_workaround:
+            return "\001\033[{}m\002{}\001\033[0m\002".format(code_str, text)
+        else:
+            return "\033[{}m{}\033[0m".format(code_str, text)
+    return color_func
+
+red    = create_color_func(31)
+green  = create_color_func(32)
+yellow = create_color_func(33)
+blue   = create_color_func(34)
+purple = create_color_func(35)
+cyan   = create_color_func(36)
+
+# Enable Color Prompts
+######################
+
+sys.ps1 = '%s>>> %s' % (_c['Green'], _c['Normal'])
+sys.ps2 = '%s... %s' % (_c['Red'], _c['Normal'])
+
+# Enable a History
+##################
+
+HISTFILE="%s/.pyhistory" % os.environ["HOME"]
+
+# Read the existing history if there is one
+if os.path.exists(HISTFILE):
+    readline.read_history_file(HISTFILE)
+
+# Set maximum number of items that will be written to the history file
+readline.set_history_length(300)
+
+def savehist():
+    readline.write_history_file(HISTFILE)
+
+atexit.register(savehist)
+
+# Enable Pretty Printing for stdout
+###################################
+def my_displayhook(value):
+    if value is not None:
+        try:
+            import __builtin__
+            __builtin__._ = value
+        except ImportError:
+            __builtins__._ = value
+
+        pprint(value)
+sys.displayhook = my_displayhook
+
+class ModuleReloadingConsole(code.InteractiveConsole):
+    def __init__(self):
+        self.last_buffer = [] # This holds the last executed statement
+        self.session_history = [] # This holds the last executed statements
+        self.buffer = []
+        super().__init__()
+        #readline.parse_and_bind("tab: complete")
+        self.stored_modifier_times = {}
+        self.check_modules_for_reload()
+
+    def runsource(self, source, *args):
+        self.last_buffer = [ source ]
+        return code.InteractiveConsole.runsource(self, source, *args)
+
+    def resetbuffer(self):
+        self.session_history.extend(self.buffer)
+        return super(ModuleReloadingConsole, self).resetbuffer()
+
+    def raw_input(self, *args):
+        line = code.InteractiveConsole.raw_input(self, *args)
+        if line == r'\e':
+            line = self._process_edit_cmd()
+        return line
+
+    def _process_edit_cmd(self):
+        # - setup the edit buffer
+        fd, filename = mkstemp('.py')
+        lines = '\n'.join('# {}'.format(line.strip('\n')) for line in self.session_history)
+        os.write(fd, lines.encode('utf-8'))
+        os.close(fd)
+
+        # - shell out to the editor
+        os.system('{} {}'.format(EDITOR, filename))
+
+        # - process commands
+        lines = open(filename)
+        os.unlink(filename)
+        for stmt in lines:
+            #self.write(cyan("... {}".format(stmt)))
+            line = stmt.strip('\n')
+            if not line.strip().startswith('#'):
+                self.push(line)
+                readline.add_history(line)
+        return ''
+
+    def runcode(self, code):
+        self.check_modules_for_reload()
+        super().runcode(code)
+        self.check_modules_for_reload() # maybe new modules are loaded
+
+    def check_modules_for_reload(self):
+        for module_name, module in sys.modules.items():
+            if hasattr(module, '__file__'):
+                module_modifier_time = os.path.getmtime(module.__file__)
+             
+                if module_name in self.stored_modifier_times:
+                    if module_modifier_time > self.stored_modifier_times[module_name]:
+                        imp.reload(module)
+                    self.stored_modifier_times[module_name] = module_modifier_time
+                else:
+                    self.stored_modifier_times[module_name] = module_modifier_time
+
+
+ModuleReloadingConsole().interact("Welcome to ModuleReloadingConsole")
