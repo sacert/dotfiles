@@ -25,6 +25,9 @@ return {
 
         require("fidget").setup({})
         require("mason").setup()
+        require("mason-lspconfig").setup {
+            ensure_installed = { "lua_ls", "rust_analyzer" },
+        }
         require("mason-lspconfig").setup({
             ensure_installed = {
                 "lua_ls",
@@ -42,7 +45,7 @@ return {
                 ["gopls"] = function()
                     local lspconfig = require("lspconfig")
                     lspconfig.gopls.setup {
-                        capabilities = capabilities
+                        capabilities = capabilities,
                     }
                 end,
                 ["lua_ls"] = function()
